@@ -57,9 +57,10 @@ Download the layers after creating the product with esomgears from the web front
 * meta-product
 * meta-example
 
-Update .template.conf file:
-$vi poky/.templateconf
- # Template settings
+# Update .template.conf file
+
+ $vi poky/.templateconf
+ #Template settings
  TEMPLATECONF=${TEMPLATECONF:-meta-jetson-tx1/conf}
 
 
