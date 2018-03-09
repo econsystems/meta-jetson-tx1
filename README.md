@@ -77,5 +77,5 @@ Download the layers after creating the product with esomgears from the web front
 
 ## Maintainers
 
-* esomgears team `<esomgears at e-consystems.com>`
+* esomgears team `<esomgears@e-consytems.com>`
 
