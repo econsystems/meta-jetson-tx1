@@ -1,0 +1,422 @@
+diff --git a/arch/arm/include/asm/arch-tegra/tegra.h b/arch/arm/include/asm/arch-tegra/tegra.h
+index b6c7cab..d9da480 100644
+--- a/arch/arm/include/asm/arch-tegra/tegra.h
++++ b/arch/arm/include/asm/arch-tegra/tegra.h
+@@ -11,6 +11,8 @@
+ #define NV_PA_ARM_PERIPHBASE	0x50040000
+ #define NV_PA_PG_UP_BASE	0x60000000
+ #define NV_PA_TMRUS_BASE	0x60005010
++#define NV_PA_TMR5_BASE		0x60005060
++#define NV_PA_TMRWDT0_BASE	0x60005100
+ #define NV_PA_CLK_RST_BASE	0x60006000
+ #define NV_PA_FLOW_BASE		0x60007000
+ #define NV_PA_GPIO_BASE		0x6000D000
+diff --git a/arch/arm/include/asm/arch-tegra/wdt.h b/arch/arm/include/asm/arch-tegra/wdt.h
+new file mode 100644
+index 0000000..80ad7e1
+--- /dev/null
++++ b/arch/arm/include/asm/arch-tegra/wdt.h
+@@ -0,0 +1,41 @@
++/*
++ * Copyright 2016 Avionic Design GmbH
++ * Copyright 2016 Julian Scheel <julian at jusst.de>
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++
++#ifndef _TEGRA_WDT_H_
++#define _TEGRA_WDT_H_
++
++struct wdt_ctrl {
++	u32 config;
++	u32 status;
++	u32 command;
++	u32 unlock;
++};
++
++#define WDT_CFG_SOURCE_MASK 0xf
++
++#define WDT_CFG_PERIOD_SHIFT 4
++#define WDT_CFG_PERIOD_MASK (0xff << WDT_CFG_PERIOD_SHIFT)
++
++#define WDT_CFG_PMC2CAR_RST_EN (1 << 15)
++
++#define WDT_STS_COUNT_SHIFT 4
++#define WDT_STS_COUNT_MASK (0xff << WDT_STS_COUNT_SHIFT)
++
++#define WDT_CMD_START_COUNTER (1 << 0)
++#define WDT_CMD_DISABLE_COUNTER (1 << 1)
++
++#define WDT_UNLOCK_PATTERN 0xc45a
++
++/* Timer registers */
++struct timer_ctrl {
++	u32 ptv;
++};
++
++#define TIMER_PTV_EN (1 << 31)
++#define TIMER_PTV_PERIODIC (1 << 30)
++
++#endif /* _TEGRA_WDT_H_ */
+diff --git a/arch/arm/mach-tegra/board2.c b/arch/arm/mach-tegra/board2.c
+index 9a89b49..904a2f5 100644
+--- a/arch/arm/mach-tegra/board2.c
++++ b/arch/arm/mach-tegra/board2.c
+@@ -126,6 +126,10 @@ int board_init(void)
+ 	clock_init();
+ 	clock_verify();
+ 
++#ifdef CONFIG_HW_WATCHDOG
++	hw_watchdog_init();
++#endif
++
+ #ifdef CONFIG_TEGRA_SPI
+ 	pin_mux_spi();
+ #endif
+@@ -227,7 +231,10 @@ int board_early_init_f(void)
+ 	return 0;
+ }
+ #endif	/* EARLY_INIT */
+-
++#if defined(ECON_OTA_SUPPORT)
++__weak int ota_fallback_handle() {
++}
++#endif
+ int board_late_init(void)
+ {
+ #ifdef CONFIG_LCD
+@@ -253,6 +260,9 @@ int board_late_init(void)
+ 	nvtboot_init_late();
+ #endif
+ 
++#if defined(ECON_OTA_SUPPORT)
++        ota_fallback_handle();
++#endif
+ 	return 0;
+ }
+ 
+diff --git a/board/nvidia/p2371-2180/p2371-2180.c b/board/nvidia/p2371-2180/p2371-2180.c
+index 604e03b..8e2388c 100644
+--- a/board/nvidia/p2371-2180/p2371-2180.c
++++ b/board/nvidia/p2371-2180/p2371-2180.c
+@@ -11,6 +11,8 @@
+ #include <pca953x.h>
+ #include <asm/arch/gpio.h>
+ #include <asm/arch/pinmux.h>
++#include <asm/arch-tegra/pmc.h>
++#include <asm/io.h>
+ #include "../p2571/max77620_init.h"
+ #include "pinmux-config-p2371-2180.h"
+ 
+@@ -79,6 +81,10 @@ void arch_preboot_os(void)
+ #ifdef CONFIG_PCI_TEGRA
+ 	tegra_pcie_power_down();
+ #endif
++#if defined(ECON_OTA_SUPPORT)
++	setenv ( "stage" , "6" );
++	saveenv();
++#endif
+ }
+ 
+ #ifdef CONFIG_PCI_TEGRA
+@@ -109,6 +115,65 @@ int board_eth_init(bd_t *bis)
+ 	return pci_eth_init(bis);
+ }
+ #endif /* PCI */
++#ifdef ECON_OTA_SUPPORT
++/* OTA_FALLBACK_HANDLE
++* Check for Last Reset Reason
++*       WDOG Reset  --> Update BOOT_FAILURE_COMMIT_ID and BOOT_FAILURE_REASON for last OTA Fallback Case
++*       POR   --> Normal Boot
++*/
++int ota_fallback_handle(void)
++{
++	u32 reg;
++        struct pmc_ctlr *pmc = (struct pmc_ctlr *)NV_PA_PMC_BASE;
++	reg = readl(&pmc->pmc_reset_status);
++	char *b,*commit_id;
++	unsigned long bootcount; //bootcount
++	if ( (reg & 0x1) == 1 )
++	{
++		printf("WDOG RESET\n");
++		b = getenv ("bootcount");
++                bootcount = b ? (int)simple_strtoul(b, NULL, 10) : bootcount;
++                bootcount++;
++                setenv_ulong("bootcount", bootcount);
++
++               if( (!strcmp(getenv("stage"),"6")) && (!strcmp(getenv("status"),"FAIL")))
++               {
++                       commit_id = getenv ("commit_id");
++                      setenv ("BOOT_FAILURE_COMMIT_ID", commit_id );
++                       setenv ("BOOT_FAILURE_REASON" , "Kernel/DTB/Initramfs is not for this board" );
++               }
++               else if( (!strcmp(getenv("stage"),"7")) && (!strcmp(getenv("status"),"FAIL")))
++               {
++                       commit_id = getenv ("commit_id");
++                        setenv ("BOOT_FAILURE_COMMIT_ID", commit_id );
++                        setenv ("BOOT_FAILURE_REASON" , "Initramfs fails to do OSTree mount integration" );
++               }
++               else if( (!strcmp(getenv("stage"),"8")) && (!strcmp(getenv("status"),"FAIL")))
++               {
++                       commit_id = getenv ("commit_id");
++                        setenv ("BOOT_FAILURE_COMMIT_ID", commit_id );
++                        setenv ("BOOT_FAILURE_REASON" , "Fails to launch rootfs(sysroot)" );
++               }
++               else if( (!strcmp(getenv("stage"),"9")) && (!strcmp(getenv("status"),"FAIL")))
++                {
++                        commit_id = getenv ("commit_id");
++                        setenv ("BOOT_FAILURE_COMMIT_ID", commit_id );
++                               setenv ("BOOT_FAILURE_REASON" , "Fails to launch target application" );
++                }
++                saveenv();
++
++	}
++	else
++	{
++		printf("Normal Boot\n");
++		setenv ("BOOT_FAILURE_COMMIT_ID", "NONE" );
++                setenv ("BOOT_FAILURE_REASON" , "NONE" );
++                setenv_ulong("bootcount", 1 );
++                saveenv();
++	}
++	return 0;
++}
++#endif
+ 
+ #ifdef CONFIG_OF_ADD_CAM_BOARD_ID
+ /* IO expander */
+diff --git a/drivers/watchdog/Makefile b/drivers/watchdog/Makefile
+index 482a4bd..dbfbcc0 100644
+--- a/drivers/watchdog/Makefile
++++ b/drivers/watchdog/Makefile
+@@ -15,3 +15,4 @@ obj-$(CONFIG_XILINX_TB_WATCHDOG) += xilinx_tb_wdt.o
+ obj-$(CONFIG_BFIN_WATCHDOG)  += bfin_wdt.o
+ obj-$(CONFIG_OMAP_WATCHDOG) += omap_wdt.o
+ obj-$(CONFIG_DESIGNWARE_WATCHDOG) += designware_wdt.o
++obj-$(CONFIG_TEGRA_WATCHDOG) += tegra_wdt.o
+diff --git a/drivers/watchdog/tegra_wdt.c b/drivers/watchdog/tegra_wdt.c
+new file mode 100644
+index 0000000..38fe704
+--- /dev/null
++++ b/drivers/watchdog/tegra_wdt.c
+@@ -0,0 +1,62 @@
++/*
++ * Copyright 2016 Avionic Design GmbH
++ * Copyright 2016 Julian Scheel <julian at jusst.de>
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++
++#include <common.h>
++#include <watchdog.h>
++#include <asm/io.h>
++#include <asm/arch-tegra/wdt.h>
++#include <asm/arch-tegra/tegra.h>
++
++/* Timeout in seconds */
++#define WDT_TIMEOUT 60
++
++/* Timer to use - 5 is used in linux kernel */
++#define WDT_TIMER_ID 5
++void hw_watchdog_init(void)
++{
++	struct timer_ctrl *timer = (struct timer_ctrl *)NV_PA_TMR5_BASE;
++	struct wdt_ctrl *wdt = (struct wdt_ctrl *)NV_PA_TMRWDT0_BASE;
++	u32 val;
++
++	/* Timer runs fixed at 1 MHz, reset is triggered at 4th timeout of
++	 * timer */
++	val = 1000000ul / 4;
++	val |= (TIMER_PTV_EN | TIMER_PTV_PERIODIC);
++	writel(val, &timer->ptv);
++
++	/* Setup actual wdt */
++	val = WDT_TIMER_ID |
++		((WDT_TIMEOUT << WDT_CFG_PERIOD_SHIFT) & WDT_CFG_PERIOD_MASK) |
++		WDT_CFG_PMC2CAR_RST_EN;
++	writel(val, &wdt->config);
++
++	/* Activate the wdt */
++	writel(WDT_CMD_START_COUNTER, &wdt->command);
++}
++
++void hw_watchdog_reset(void)
++{
++	struct wdt_ctrl *wdt = (struct wdt_ctrl *)NV_PA_TMRWDT0_BASE;
++
++	/* Activate the wdt */
++#if !defined(ECON_OTA_SUPPORT)
++	writel(WDT_CMD_START_COUNTER, &wdt->command);
++#endif
++}
++
++void hw_watchdog_disable(void)
++{
++	struct timer_ctrl *timer = (struct timer_ctrl *)NV_PA_TMR5_BASE;
++	struct wdt_ctrl *wdt = (struct wdt_ctrl *)NV_PA_TMRWDT0_BASE;
++
++	/* Write unlock pattern */
++	writel(WDT_UNLOCK_PATTERN, &wdt->unlock);
++	/* Disable wdt */
++	writel(WDT_CMD_DISABLE_COUNTER, &wdt->command);
++	/* Stop timer */
++	writel(0, &timer->ptv);
++}
+diff --git a/include/config_distro_bootcmd.h b/include/config_distro_bootcmd.h
+index 5cf79c5..28352a8 100644
+--- a/include/config_distro_bootcmd.h
++++ b/include/config_distro_bootcmd.h
+@@ -243,8 +243,10 @@
+ 			"run bootcmd_${target}; "                         \
+ 		"done\0"
+ 
++/* Commented to use OTA BOOTCMD */
++#if 0
+ #ifndef CONFIG_BOOTCOMMAND
+ #define CONFIG_BOOTCOMMAND "run distro_bootcmd"
+ #endif
+-
++#endif
+ #endif  /* _CONFIG_CMD_DISTRO_BOOTCMD_H */
+diff --git a/include/configs/p2371-2180.h b/include/configs/p2371-2180.h
+index 99e53cc..c7331ae 100644
+--- a/include/configs/p2371-2180.h
++++ b/include/configs/p2371-2180.h
+@@ -86,4 +86,120 @@
+ 
+ #define COUNTER_FREQUENCY	38400000
+ 
++#define ECON_OTA_SUPPORT
++
++#if defined(ECON_OTA_SUPPORT)
++#define CONFIG_CMD_IMI
++#define CONFIG_TEGRA_WATCHDOG
++#define CONFIG_HW_WATCHDOG
++#define CONFIG_BOOTCOMMAND \
++	"setenv stage 1;" \
++        "setenv status FAIL;" \
++        "run ota_bootcmd_mmc1"
++#define BOARD_EXTRA_ENV_SETTINGS \
++	"ota_bootargs=setenv bootargs fbcon=map:0 console=tty0 console=ttyS0,115200n8 ddr_die=2048M@2048M ddr_die=2048M@4096M " \
++	"section=256M memtype=0 vpr_resize usb_port_owner_info=0 lane_owner_info=0 emc_max_dvfs=0 touch_id=0@63 video=tegrafb " \
++	"no_console_suspend=1 debug_uartport=lsport,0 earlyprintk=uart8250-32bit,0x70006000 maxcpus=4 usbcore.old_scheme_first=1 " \
++	"lp0_vec=${lp0_vec} nvdumper_reserved=${nvdumper_reserved} core_edp_mv=1125 core_edp_ma=4000 gpt root=/dev/mmcblk1p1 rw rootwait ${extra_bootargs} tegra_wdt.nowayout=0 panic=30\0" \
++	"boot_dir=/boot\0" \
++	"fdtfile=devicetree-Image-tegra210-jetson-tx1-p2597-2180-a01-devkit.dtb\0" \
++	"verify=n\0" \
++        "bootcount=1\0" \
++	"console=ttyS0,115200n8\0" \
++        "bootenv=/boot/uEnv.txt\0" \
++	"filesize=0x400\0" \
++        "bootpart=1:1\0" \
++        "boot_fdt=try\0" \
++        "importbootenv=echo Importing environment from mmc ...; " \
++		"env import -t -r $loadaddr $filesize\0" \
++	"loadramdisk=ext4load mmc ${bootpart} ${ramdisk_addr_r} ${boot_dir}/${ramdisk_image}\0" \
++        "loadimage=ext4load mmc ${bootpart} ${loadaddr} ${boot_dir}/${kernel_image}\0" \
++        "loadfdt=ext4load mmc ${bootpart} ${fdt_addr_r} ${boot_dir}${bootdir}${fdtfile}\0" \
++        "verify_ramdisk=iminfo $ramdisk_addr_r\0" \
++	"boot_images=booti ${loadaddr} ${ramdisk_addr_r} ${fdt_addr_r}\0" \
++	"loadbootscript=load mmc ${mmcdev} ${loadaddr} boot.scr\0" \
++        "loadbootenv=ext4load mmc ${bootpart} ${loadaddr} ${bootenv}\0" \
++	"mmcdev=1\0" \
++	"mmcloados=run ota_bootargs; " \
++		"if test ${boot_fdt} = yes || test ${boot_fdt} = try; then " \
++			"if run loadfdt; then " \
++				"setenv status FAIL;" \
++                                "setenv stage 4;" \
++                                "saveenv;" \
++				"echo Verifying Checksum;" \
++				"if run verify_ramdisk; then " \
++                                        "setenv status FAIL;" \
++                                        "setenv stage 6;" \
++					"saveenv;" \
++                                "else " \
++                                        "setenv BOOT_FAILURE_COMMIT_ID ${commit_id};" \
++					"setenv BOOT_FAILURE_REASON Ramfs - Checksum Verification fails;" \
++					"saveenv;" \
++                                "fi; " \
++                                "if run boot_images; then " \
++                                        "setenv status FAIL;" \
++                                        "setenv stage 6;" \
++					"saveenv;" \
++                                "else " \
++                                        "setenv BOOT_FAILURE_COMMIT_ID ${commit_id};" \
++					"setenv BOOT_FAILURE_REASON bootm commands fails;" \
++                                        "saveenv;" \
++                                "fi; " \
++			"else " \
++				"setenv BOOT_FAILURE_COMMIT_ID ${commit_id};" \
++                                "setenv BOOT_FAILURE_REASON kernel image not found/empty;" \
++                                "saveenv;" \
++                                "exit;" \
++			"fi; " \
++		"else " \
++			"booti; " \
++		"fi;\0" \
++	"ota_bootcmd_mmc1=mmc dev ${mmcdev}; " \
++		"if mmc rescan; then " \
++			"echo SD/MMC found on device ${mmcdev};" \
++			"if run loadbootscript; then " \
++				"run bootscript;" \
++			"else " \
++				"if test ${bootcount} = 3; then " \
++					"echo ota_fallback;" \
++					"setenv bootcount 1;" \
++					"setenv bootenv /boot/uEnv.txt_prev;" \
++					"saveenv;" \
++				"else " \
++					"setenv bootenv /boot/uEnv.txt;" \
++					"saveenv;" \
++				"fi; " \
++				"if run loadbootenv; then " \
++					"echo Loaded environment from ${bootenv};" \
++					"run importbootenv;" \
++				"fi;" \
++				"if test -n $uenvcmd; then " \
++					"echo Running uenvcmd ...;" \
++					"run uenvcmd;" \
++				"fi;" \
++				"if run loadimage; then " \
++					"setenv status FAIL;" \
++					"setenv stage 2;" \
++					"saveenv;" \
++					"if run loadramdisk; then " \
++						"setenv status FAIL;" \
++						"setenv stage 3;" \
++						"saveenv;" \
++						"run mmcloados;" \
++					"else " \
++						"setenv BOOT_FAILURE_COMMIT_ID ${commit_id};" \
++						"setenv BOOT_FAILURE_REASON ramdisk image not found/empty;" \
++						"saveenv;" \
++						"exit;" \
++					"fi;" \
++				"else " \
++					"setenv BOOT_FAILURE_COMMIT_ID ${commit_id};" \
++					"setenv BOOT_FAILURE_REASON kernel image not found/empty;" \
++					"saveenv;" \
++					"exit;" \
++				"fi;" \
++			"fi;" \
++		"fi;\0" \
++
++#endif
+ #endif /* _P2371_2180_H */
+diff --git a/include/configs/tegra-common-post.h b/include/configs/tegra-common-post.h
+index 0472b7d..33c441a 100644
+--- a/include/configs/tegra-common-post.h
++++ b/include/configs/tegra-common-post.h
+@@ -67,9 +67,12 @@
+ #define TEGRA_LP0_SETTINGS
+ #endif
+ 
++/* Commented For ECON OTA Support */
++#if 0
+ #ifndef BOARD_EXTRA_ENV_SETTINGS
+ #define BOARD_EXTRA_ENV_SETTINGS
+ #endif
++#endif
+ 
+ #define CONFIG_SYS_LOAD_ADDR CONFIG_LOADADDR
+ 

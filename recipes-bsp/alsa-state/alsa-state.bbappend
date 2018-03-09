@@ -1,0 +1,3 @@
+FILESEXTRAPATHS_prepend := "${THISDIR}/${PN}:"
+
+PACKAGE_ARCH_tegra210 = "${MACHINE_ARCH}"
