@@ -18,7 +18,7 @@ BBLAYERS ?= " \
   ##OEROOT##/meta-openembedded/meta-networking \
   ##OEROOT##/meta-openembedded/meta-python \
   \
-  ##OEROOT##/meta-tegra-tx1 \
+  ##OEROOT##/meta-jetson-tx1 \
   ##OEROOT##/meta-qt5 \
   ##OEROOT##/meta-product \
   "
