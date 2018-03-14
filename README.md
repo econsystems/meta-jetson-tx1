@@ -45,7 +45,7 @@ This layer depends on:
   * branch: krogoth
   * revision: HEAD
 
-* URI: git://git.github.com/meta-jetson-tx1
+* URI: https://github.com/econsystems/meta-jetson-tx1
   * branch: master
   * revision: HEAD
 
